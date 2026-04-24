@@ -1,7 +1,15 @@
 #!/bin/bash
 
 git_sync() {
-    local branch="$1"
+    local branch
+
+    branch=$(git rev-parse --abbrev-ref HEAD) || return 1
+
+    if [ "$branch" = "HEAD" ]; then
+        echo "❌ Detached HEAD — неопределенная ветка in $(pwd)"
+        return 1
+    fi
+
     echo "[git] syncing $branch in $(pwd)"
 
     git fetch origin || return 1
@@ -20,14 +28,6 @@ git_sync() {
 deploy() {
     local process_name="$1"
 
-    branch=$(git rev-parse --abbrev-ref HEAD)
-
-    if [ "$branch" = "HEAD" ]; then
-        echo "❌ Detached HEAD — неопределенная ветка"
-        return 1
-    fi
-    echo "branch = $branch"
-
     if [ -z "$process_name" ]; then
         echo "Для запуска используйте deploy <process_name>"
         return 1
@@ -43,12 +43,10 @@ deploy() {
     fi
 
     cd ~/pim/backend || return 1
-
-    git_sync "$branch" || return 1
+    git_sync || return 1
 
     cd ~/pim/frontend || return 1
-
-    git_sync "$branch" || return 1
+    git_sync || return 1
 
     echo "Clearing cache at backend"
      ~/pim/backend/bin/console cache:clear
