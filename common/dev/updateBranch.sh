@@ -1,10 +1,13 @@
 #!/bin/bash
-#v_2
+#v_3
 # - поиск реп в папке $HOME не глубже 2-го уровня вложенности
-# - выбор реп из предустановленного списка 
- 
+# - выбор реп из найденного списка
+# - служебные ветки master/master_dev/master_com синхронизируются с origin
+# - feature-ветки не трогаются автоматически
+
 clear
 repos=()
+branches=("master" "master_dev" "master_com")
 
 while IFS= read -r gitdir; do
     repo_path="${gitdir%/.git}"
@@ -12,13 +15,10 @@ while IFS= read -r gitdir; do
     repos+=("$repo_name:$repo_path")
 done < <(find ~ -maxdepth 3 -type d -name ".git" 2>/dev/null)
 
-# Проверяем, что нашли
 if [ ${#repos[@]} -eq 0 ]; then
     echo "❌ Репозитории не найдены"
     exit 1
 fi
-
-branches=("master" "master_dev" "master_com");
 
 echo "Доступные репозитории:"
 echo
@@ -26,124 +26,127 @@ echo
 for i in "${!repos[@]}"; do
     name="${repos[$i]%%:*}"
     path="${repos[$i]#*:}"
-
     echo " $(($i+1)). $name ($path)"
 done
 
-
-echo 
+echo
 echo "  q. Выход"
-echo 
+echo
 
-echo 
 read -p "Выберите репозиторий (номер): " -n 1 choice
-echo 
+echo
 
-if [ "$choice" = "q" ] || [ "$choice" = "Q" ] || [ "$choice" = "й" ] || [ "$choice" = "Й" ]; then 
-    echo "Выход";
-    exit 0;
-fi
-
-if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
-    echo "❌ Введите номер";
-    exit 1; 
-fi
-
-if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#repos[@]}" ]; then 
-    echo "❌ выберите число в диапазоне 1 - ${#repos[@]}";
-    exit 1;
-fi
-
-#echo "${repos[$((choice-1))]}";
-selected="${repos[$((choice-1))]}";
-
-repo_path="${selected#*:}"
-echo 
-echo "Выбран $repo_path"
-echo 
-
-cd $repo_path || exit 1
-
-# Получаем текущую ветку
-current_branch=$(git symbolic-ref --short HEAD 2>/dev/null)
-
-switched=false
-# Проверяем, что текущая ветка не является одной из защищенных
-if [ "$current_branch" = "master" ] || [ "$current_branch" = "master_dev" ] || [ "$current_branch" = "master_com" ]; then
-    echo "Вы находитесь в ветке $current_branch, делаем detach"
-    echo
-    git switch --detach
-
-    switched=true
-    #exit 1
-fi
-
-# Функция для проверки наличия обновлений в ветке
-check_updates() {
-    local branch=$1
-    
-    # Сохраняем текущий коммит локальной ветки
-    local local_commit=$(git rev-parse "$branch" 2>/dev/null)
-    
-    # Получаем последний коммит с удаленной ветки
-    local remote_commit=$(git ls-remote origin "refs/heads/$branch" 2>/dev/null | cut -f1)
-    
-    if [ -z "$remote_commit" ]; then
-        echo "  - $branch: удаленная ветка не найдена"
-        return 1
-    fi
-    
-    if [ "$local_commit" = "$remote_commit" ]; then
-        echo "  - $branch: нет обновлений (актуальна)"
-        return 1
-    else
-        echo "  - $branch: есть обновления"
-        echo "    Локальный:  $(echo $local_commit | cut -c1-7)"
-        echo "    Удаленный:  $(echo $remote_commit | cut -c1-7)"
-        return 0
-    fi
-}
-
-checkback() {
-       if [ "$switched" = true ]; then
-        echo "Возвращаемся на ветку: $current_branch"
-        git checkout "$current_branch"
-    fi 
-}
-
-
-echo "Проверка наличия обновлений в ветках..."
-
-# Проверяем каждую ветку
-updates_available=false
-for branch in master master_dev master_com; do
-    if check_updates $branch; then
-        updates_available=true
-    fi
-done
-
-if [ "$updates_available" = false ]; then
-    checkback
-    echo "Нет обновлений ни в одной из веток"
+if [ "$choice" = "q" ] || [ "$choice" = "Q" ] || [ "$choice" = "й" ] || [ "$choice" = "Й" ]; then
+    echo "Выход"
     exit 0
 fi
 
-# Если все хорошо, выполняем fetch для обновления веток
-echo "Обновление веток master, master_dev, master_com..."
-git fetch origin 
-
-if [ $? -eq 0 ]; then
-    echo "Ветки успешно обновлены"
-   
-    # Показываем разницу между локальной и удаленной ветками
-    echo ""
-    echo "Текущее состояние:"
-    for branch in ${branches[@]}; do
-        echo "$branch: $(git rev-parse --short $branch) -> $(git rev-parse --short origin/$branch 2>/dev/null || echo 'нет удаленной ветки')"
-    done
-else
-    echo "Ошибка при обновлении веток"
-    checkback
+if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+    echo "❌ Введите номер"
     exit 1
 fi
-checkback
+
+if [ "$choice" -lt 1 ] || [ "$choice" -gt "${#repos[@]}" ]; then
+    echo "❌ выберите число в диапазоне 1 - ${#repos[@]}"
+    exit 1
+fi
+
+selected="${repos[$((choice-1))]}"
+repo_path="${selected#*:}"
+
+echo
+echo "Выбран $repo_path"
+echo
+
+cd "$repo_path" || exit 1
+
+current_branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+switched=false
+
+is_service_branch() {
+    local branch=$1
+    for service_branch in "${branches[@]}"; do
+        if [ "$branch" = "$service_branch" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+restore_branch() {
+    if [ "$switched" = true ] && [ -n "$current_branch" ]; then
+        echo
+        echo "Возвращаемся на ветку: $current_branch"
+        git checkout "$current_branch"
+    fi
+}
+
+short_commit() {
+    local ref=$1
+    git rev-parse --short "$ref" 2>/dev/null || echo "-"
+}
+
+if is_service_branch "$current_branch"; then
+    echo "Вы находитесь в служебной ветке $current_branch, временно уходим в detached HEAD"
+    echo
+    if ! git checkout --detach >/dev/null 2>&1; then
+        echo "❌ Не удалось перейти в detached HEAD"
+        echo "Проверьте, нет ли незакоммиченных изменений"
+        exit 1
+    fi
+    switched=true
+fi
+
+echo "Обновляем информацию об удаленных ветках..."
+if ! git fetch origin --prune; then
+    echo "❌ Ошибка при git fetch origin --prune"
+    restore_branch
+    exit 1
+fi
+
+echo
+echo "Синхронизация служебных веток: ${branches[*]}"
+
+for branch in "${branches[@]}"; do
+    if ! git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        echo "  - $branch: удаленная ветка origin/$branch не найдена, пропускаем"
+        continue
+    fi
+
+    before=$(short_commit "$branch")
+    remote=$(short_commit "origin/$branch")
+
+    if git show-ref --verify --quiet "refs/heads/$branch"; then
+        if git branch -f "$branch" "origin/$branch" >/dev/null 2>&1; then
+            after=$(short_commit "$branch")
+            if [ "$before" = "$after" ]; then
+                echo "  - $branch: актуальна ($after)"
+            else
+                echo "  - $branch: обновлена $before -> $after"
+            fi
+        else
+            echo "  - $branch: ❌ не удалось обновить локальную ветку"
+        fi
+    else
+        if git branch --track "$branch" "origin/$branch" >/dev/null 2>&1; then
+            echo "  - $branch: создана от origin/$branch ($remote)"
+        else
+            echo "  - $branch: ❌ не удалось создать локальную ветку"
+        fi
+    fi
+done
+
+echo
+echo "Текущее состояние служебных веток:"
+for branch in "${branches[@]}"; do
+    local_short=$(short_commit "$branch")
+    remote_short=$(short_commit "origin/$branch")
+    echo "  $branch: $local_short -> $remote_short"
+done
+
+if [ -n "$current_branch" ] && ! is_service_branch "$current_branch" ]; then
+    echo
+    echo "Текущая рабочая ветка $current_branch не изменялась"
+fi
+
+restore_branch
