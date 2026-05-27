@@ -4,22 +4,28 @@ set -Eeuo pipefail
 
 APP_ENV="${APP_ENV:-dev}"
 PROJECT_DIR="${ERGONODE_DOCKER_DIR:-}"
+APP_DIR="${ERGONODE_APP_DIR:-}"
 COMPOSE_FILE=""
 PHP_SERVICE="${PHP_SERVICE:-php}"
 RUN_MIGRATIONS=0
 EXECUTE=0
 STOP_WORKERS=1
+USE_DOCKER=0
 
 WORKER_SERVICES="${WORKER_SERVICES:-crond php-messenger-import php-messenger-export php-messenger-segment php-messenger-completeness php-messenger-notification php-messenger-batch_action}"
+LOCAL_WORKER_STOP_CMD="${LOCAL_WORKER_STOP_CMD:-supervisorctl stop all}"
+LOCAL_WORKER_START_CMD="${LOCAL_WORKER_START_CMD:-supervisorctl start all}"
 
 usage() {
     cat <<'USAGE'
 Usage:
-  ergonode-rename-attribute.sh --project-dir /path/to/pim/docker OLD_CODE NEW_CODE
-  ergonode-rename-attribute.sh --project-dir /path/to/pim/docker OLD_CODE NEW_CODE --execute
+  renameattr.sh --project-dir /path/to/pim/docker OLD_CODE NEW_CODE
+  renameattr.sh --project-dir /path/to/pim/docker OLD_CODE NEW_CODE --execute
+  renameattr.sh --app-dir /path/to/backend OLD_CODE NEW_CODE --execute
 
 Options:
-  --project-dir DIR      Directory containing docker-compose.yml. Can also use ERGONODE_DOCKER_DIR.
+  --project-dir DIR      Docker compose dir or app dir. Can also use ERGONODE_DOCKER_DIR.
+  --app-dir DIR          Directory containing bin/console for non-Docker mode. Can also use ERGONODE_APP_DIR.
   --env ENV              Symfony env. Default: dev. Can also use APP_ENV.
   --compose-file FILE    Compose file path. Default: PROJECT_DIR/docker-compose.yml.
   --execute              Apply rename. Without it only dry-run report is shown.
@@ -29,9 +35,12 @@ Options:
 
 Env overrides:
   ERGONODE_DOCKER_DIR    Default project dir.
+  ERGONODE_APP_DIR       Default local app dir containing bin/console.
   APP_ENV                Default Symfony env.
   PHP_SERVICE            Compose PHP service name. Default: php.
   WORKER_SERVICES        Space-separated services stopped around execute.
+  LOCAL_WORKER_STOP_CMD  Non-Docker stop command. Default: supervisorctl stop all.
+  LOCAL_WORKER_START_CMD Non-Docker start command. Default: supervisorctl start all.
 USAGE
 }
 
@@ -50,6 +59,11 @@ while [[ $# -gt 0 ]]; do
         --project-dir)
             [[ $# -ge 2 ]] || die "--project-dir requires a value"
             PROJECT_DIR="$2"
+            shift 2
+            ;;
+        --app-dir)
+            [[ $# -ge 2 ]] || die "--app-dir requires a value"
+            APP_DIR="$2"
             shift 2
             ;;
         --env)
@@ -103,21 +117,71 @@ done
 OLD_CODE="${args[0]}"
 NEW_CODE="${args[1]}"
 
-[[ -n "$PROJECT_DIR" ]] || die "Set --project-dir or ERGONODE_DOCKER_DIR"
+if [[ -z "$PROJECT_DIR" ]]; then
+    PROJECT_DIR="$(pwd)"
+fi
+
 [[ -d "$PROJECT_DIR" ]] || die "Project dir does not exist: $PROJECT_DIR"
 
 if [[ -z "$COMPOSE_FILE" ]]; then
     COMPOSE_FILE="$PROJECT_DIR/docker-compose.yml"
 fi
 
-[[ -f "$COMPOSE_FILE" ]] || die "Compose file does not exist: $COMPOSE_FILE"
+if command -v docker >/dev/null 2>&1 && [[ -f "$COMPOSE_FILE" ]]; then
+    USE_DOCKER=1
+else
+    USE_DOCKER=0
+fi
+
+if [[ "$USE_DOCKER" -eq 0 ]]; then
+    if [[ -z "$APP_DIR" ]]; then
+        if [[ -f "$PROJECT_DIR/bin/console" ]]; then
+            APP_DIR="$PROJECT_DIR"
+        elif [[ -f "$PROJECT_DIR/backend/bin/console" ]]; then
+            APP_DIR="$PROJECT_DIR/backend"
+        elif [[ -f "$(pwd)/bin/console" ]]; then
+            APP_DIR="$(pwd)"
+        else
+            die "Non-Docker mode requires --app-dir, ERGONODE_APP_DIR, or a project dir containing bin/console"
+        fi
+    fi
+
+    [[ -d "$APP_DIR" ]] || die "App dir does not exist: $APP_DIR"
+    [[ -f "$APP_DIR/bin/console" ]] || die "bin/console not found in app dir: $APP_DIR"
+fi
 
 compose() {
     docker compose --project-directory "$PROJECT_DIR" -f "$COMPOSE_FILE" "$@"
 }
 
 console() {
-    compose exec -T "$PHP_SERVICE" bin/console "$@" "--env=$APP_ENV"
+    if [[ "$USE_DOCKER" -eq 1 ]]; then
+        compose exec -T "$PHP_SERVICE" bin/console "$@" "--env=$APP_ENV"
+    else
+        (cd "$APP_DIR" && php bin/console "$@" "--env=$APP_ENV")
+    fi
+}
+
+stop_workers() {
+    if [[ "$USE_DOCKER" -eq 1 ]]; then
+        # shellcheck disable=SC2086
+        compose stop $WORKER_SERVICES
+    else
+        if [[ -n "$LOCAL_WORKER_STOP_CMD" ]]; then
+            sh -c "$LOCAL_WORKER_STOP_CMD"
+        fi
+    fi
+}
+
+start_workers() {
+    if [[ "$USE_DOCKER" -eq 1 ]]; then
+        # shellcheck disable=SC2086
+        compose up -d $WORKER_SERVICES
+    else
+        if [[ -n "$LOCAL_WORKER_START_CMD" ]]; then
+            sh -c "$LOCAL_WORKER_START_CMD"
+        fi
+    fi
 }
 
 workers_started=0
@@ -133,8 +197,7 @@ cleanup() {
 
     if [[ "$workers_started" -eq 1 ]]; then
         log "Starting workers/scheduler"
-        # shellcheck disable=SC2086
-        compose up -d $WORKER_SERVICES || true
+        start_workers || true
     fi
 
     exit "$exit_code"
@@ -148,8 +211,13 @@ fi
 
 trap cleanup EXIT
 
-log "Checking current containers"
-compose ps
+if [[ "$USE_DOCKER" -eq 1 ]]; then
+    log "Mode: Docker compose ($COMPOSE_FILE)"
+    log "Checking current containers"
+    compose ps
+else
+    log "Mode: local PHP ($APP_DIR)"
+fi
 
 if [[ "$RUN_MIGRATIONS" -eq 1 ]]; then
     log "Running migrations"
@@ -158,8 +226,7 @@ fi
 
 if [[ "$STOP_WORKERS" -eq 1 ]]; then
     log "Stopping workers/scheduler"
-    # shellcheck disable=SC2086
-    compose stop $WORKER_SERVICES
+    stop_workers
     workers_started=1
 fi
 
