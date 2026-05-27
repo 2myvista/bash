@@ -63,3 +63,5 @@ echo "=== Операция завершена ==="
 realpath ~/test
 echo -e "выполните команду\n"
 echo -e "sudo -u postgres psql -h localhost -U ergodbu -W '$DB_NAME' < название_backup.dump\n"
+echo -e "если архив *.gz\n"
+echo -e "gunzip -c ergo_full_04_03_2026.dump.gz | sudo -u postgres psql -h localhost -U ergodbu -d '$DB_NAME'\n"
