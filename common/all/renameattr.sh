@@ -237,4 +237,7 @@ maintenance_enabled=1
 log "Executing attribute rename: $OLD_CODE -> $NEW_CODE"
 console ergonode:attribute:rename-code "$OLD_CODE" "$NEW_CODE" --execute
 
+log "Clearing aggregate cache"
+console cache:pool:clear aggregate.cache
+
 log "Attribute rename completed"
