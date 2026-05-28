@@ -2,6 +2,10 @@
 
 set -Eeuo pipefail
 
+APP_ENV_EXPLICIT=0
+if [[ -n "${APP_ENV:-}" ]]; then
+    APP_ENV_EXPLICIT=1
+fi
 APP_ENV="${APP_ENV:-dev}"
 PROJECT_DIR="${ERGONODE_DOCKER_DIR:-}"
 APP_DIR="${ERGONODE_APP_DIR:-}"
@@ -22,6 +26,7 @@ Usage:
   renameattr.sh --project-dir /path/to/pim/docker OLD_CODE NEW_CODE
   renameattr.sh --project-dir /path/to/pim/docker OLD_CODE NEW_CODE --execute
   renameattr.sh --app-dir /path/to/backend OLD_CODE NEW_CODE --execute
+  renameattr.sh --app-dir /path/to/backend OLD_CODE NEW_CODE --execute --env prod
 
 Options:
   --project-dir DIR      Docker compose dir or app dir. Can also use ERGONODE_DOCKER_DIR.
@@ -36,11 +41,14 @@ Options:
 Env overrides:
   ERGONODE_DOCKER_DIR    Default project dir.
   ERGONODE_APP_DIR       Default local app dir containing bin/console.
-  APP_ENV                Default Symfony env.
+  APP_ENV                Default Symfony env. Defaults to dev; use --env prod or APP_ENV=prod on production.
   PHP_SERVICE            Compose PHP service name. Default: php.
   WORKER_SERVICES        Space-separated services stopped around execute.
   LOCAL_WORKER_STOP_CMD  Non-Docker stop command. Default: supervisorctl stop all.
   LOCAL_WORKER_START_CMD Non-Docker start command. Default: supervisorctl start all.
+
+Production:
+  Always pass --env prod or APP_ENV=prod. Otherwise the rename and aggregate cache clear run in dev env.
 USAGE
 }
 
@@ -69,6 +77,7 @@ while [[ $# -gt 0 ]]; do
         --env)
             [[ $# -ge 2 ]] || die "--env requires a value"
             APP_ENV="$2"
+            APP_ENV_EXPLICIT=1
             shift 2
             ;;
         --compose-file)
@@ -205,18 +214,25 @@ cleanup() {
 
 if [[ "$EXECUTE" -eq 0 ]]; then
     log "Running dry-run for attribute rename: $OLD_CODE -> $NEW_CODE"
+    log "Symfony env: $APP_ENV"
     console ergonode:attribute:rename-code "$OLD_CODE" "$NEW_CODE"
     exit 0
+fi
+
+if [[ "$APP_ENV_EXPLICIT" -eq 0 ]]; then
+    die "Explicit env is required for --execute. Use --env dev, --env prod, or APP_ENV=..."
 fi
 
 trap cleanup EXIT
 
 if [[ "$USE_DOCKER" -eq 1 ]]; then
     log "Mode: Docker compose ($COMPOSE_FILE)"
+    log "Symfony env: $APP_ENV"
     log "Checking current containers"
     compose ps
 else
     log "Mode: local PHP ($APP_DIR)"
+    log "Symfony env: $APP_ENV"
 fi
 
 if [[ "$RUN_MIGRATIONS" -eq 1 ]]; then
