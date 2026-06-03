@@ -452,7 +452,7 @@ if [[ "$STOP_WORKERS" -eq 1 ]]; then
 fi
 
 log "Enabling attribute maintenance"
-console ergonode:attribute:rename-maintenance enable
+console ergonode:attribute:rename-maintenance enable --reason "attribute delete"
 maintenance_enabled=1
 
 log "Executing attribute delete: $CODE"

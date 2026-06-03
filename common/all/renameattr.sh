@@ -247,7 +247,7 @@ if [[ "$STOP_WORKERS" -eq 1 ]]; then
 fi
 
 log "Enabling attribute rename maintenance"
-console ergonode:attribute:rename-maintenance enable
+console ergonode:attribute:rename-maintenance enable --reason "attribute rename"
 maintenance_enabled=1
 
 log "Executing attribute rename: $OLD_CODE -> $NEW_CODE"
