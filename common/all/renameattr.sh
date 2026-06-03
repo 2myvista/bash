@@ -61,6 +61,80 @@ log() {
     echo "==> $*"
 }
 
+trim_value() {
+    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+strip_quotes() {
+    local value="$1"
+
+    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+        value="${value:1:${#value}-2}"
+    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+        value="${value:1:${#value}-2}"
+    fi
+
+    printf '%s' "$value"
+}
+
+read_env_local_app_env() {
+    local env_file="$1"
+    local line
+    local value
+
+    [[ -f "$env_file" ]] || return 1
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" =~ ^[[:space:]]*APP_ENV[[:space:]]*=(.*)$ ]]; then
+            value="${BASH_REMATCH[1]}"
+            value="${value%%#*}"
+            value="$(printf '%s' "$value" | trim_value)"
+            value="$(strip_quotes "$value")"
+
+            [[ -n "$value" ]] || return 1
+            printf '%s' "$value"
+            return 0
+        fi
+    done < "$env_file"
+
+    return 1
+}
+
+resolve_env_local_path() {
+    if [[ -n "$APP_DIR" ]]; then
+        printf '%s/.env.local' "$APP_DIR"
+        return 0
+    fi
+
+    if [[ -f "$PROJECT_DIR/bin/console" ]]; then
+        printf '%s/.env.local' "$PROJECT_DIR"
+        return 0
+    fi
+
+    if [[ -f "$PROJECT_DIR/backend/bin/console" || -f "$PROJECT_DIR/backend/.env.local" ]]; then
+        printf '%s/backend/.env.local' "$PROJECT_DIR"
+        return 0
+    fi
+
+    printf '%s/.env.local' "$PROJECT_DIR"
+}
+
+check_env_local_matches_runtime_env() {
+    local env_file
+    local env_local
+
+    env_file="$(resolve_env_local_path)"
+    env_local="$(read_env_local_app_env "$env_file" || true)"
+
+    if [[ -z "$env_local" ]]; then
+        die "APP_ENV check failed: $env_file must exist and contain APP_ENV before renameattr can run."
+    fi
+
+    if [[ "$APP_ENV" != "$env_local" ]]; then
+        die "APP_ENV mismatch: runtime APP_ENV is \"$APP_ENV\", but $env_file contains APP_ENV=\"$env_local\". renameattr will not run."
+    fi
+}
+
 args=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -131,6 +205,8 @@ if [[ -z "$PROJECT_DIR" ]]; then
 fi
 
 [[ -d "$PROJECT_DIR" ]] || die "Project dir does not exist: $PROJECT_DIR"
+
+check_env_local_matches_runtime_env
 
 if [[ -z "$COMPOSE_FILE" ]]; then
     COMPOSE_FILE="$PROJECT_DIR/docker-compose.yml"
