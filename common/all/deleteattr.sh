@@ -19,6 +19,8 @@ EXECUTE=0
 STOP_WORKERS=1
 USE_DOCKER=0
 ATTRIBUTE_ID=""
+MAINTENANCE_ALREADY_ENABLED=0
+SKIP_CACHE_CLEAR=0
 
 WORKER_SERVICES="${WORKER_SERVICES:-crond php-messenger-import php-messenger-export php-messenger-segment php-messenger-completeness php-messenger-notification php-messenger-batch_action}"
 LOCAL_WORKER_STOP_CMD="${LOCAL_WORKER_STOP_CMD:-supervisorctl stop all}"
@@ -41,6 +43,9 @@ Options:
   --execute              Apply delete. Without it only dry-run report is shown.
   --migrate              Run ergonode:migrations:migrate before execute.
   --no-stop-workers      Do not stop/start workers around execute.
+  --maintenance-already-enabled
+                         Internal batch mode: do not enable/disable maintenance or stop/start workers.
+  --skip-cache-clear     Internal batch mode: do not clear aggregate cache after this attribute.
   -h, --help             Show this help.
 
 Env overrides:
@@ -186,6 +191,15 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-stop-workers)
             STOP_WORKERS=0
+            shift
+            ;;
+        --maintenance-already-enabled)
+            MAINTENANCE_ALREADY_ENABLED=1
+            STOP_WORKERS=0
+            shift
+            ;;
+        --skip-cache-clear)
+            SKIP_CACHE_CLEAR=1
             shift
             ;;
         -h|--help)
@@ -451,14 +465,22 @@ if [[ "$STOP_WORKERS" -eq 1 ]]; then
     workers_started=1
 fi
 
-log "Enabling attribute maintenance"
-console ergonode:attribute:rename-maintenance enable --reason "attribute delete"
-maintenance_enabled=1
+if [[ "$MAINTENANCE_ALREADY_ENABLED" -eq 1 ]]; then
+    log "Attribute maintenance already enabled"
+else
+    log "Enabling attribute maintenance"
+    console ergonode:attribute:rename-maintenance enable --reason "attribute delete"
+    maintenance_enabled=1
+fi
 
 log "Executing attribute delete: $CODE"
 delete_command --execute
 
-log "Clearing aggregate cache"
-console cache:pool:clear aggregate.cache
+if [[ "$SKIP_CACHE_CLEAR" -eq 1 ]]; then
+    log "Skipping aggregate cache clear"
+else
+    log "Clearing aggregate cache"
+    console cache:pool:clear aggregate.cache
+fi
 
 log "Attribute delete completed"
